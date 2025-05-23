@@ -1,41 +1,41 @@
 import csv
-import json
+from datetime import datetime, timedelta
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OpenOrderParams
-from keys import api_key  # Your API key should be safely stored in keys.py
+from keys import api_key
 
 # ----------- Configuration -----------
 host = "https://clob.polymarket.com"
 chain_id = 137  # Polygon Mainnet
+client = ClobClient(host=host, key=api_key, chain_id=chain_id)
 
-# ----------- Initialize Polymarket CLOB Client -----------
-client = ClobClient(
-    host=host,
-    key=api_key,
-    chain_id=chain_id
-)
+# ----------- Time Cutoff -----------
+cutoff_time = datetime.utcnow() - timedelta(days=7)
 
-# ----------- Market Fetching with Pagination -----------
+# ----------- Market Fetching with Early Stop -----------
 markets_list = []
 next_cursor = None
+fetching = True
 
-while True:
+while fetching:
     try:
         print(f"Fetching markets with next_cursor: {next_cursor}")
+        response = client.get_markets(next_cursor=next_cursor) if next_cursor else client.get_markets()
 
-        if next_cursor is None:
-            response = client.get_markets()
-        else:
-            response = client.get_markets(next_cursor=next_cursor)
-
-        # Check for valid data
         if 'data' not in response:
-            print("No data found in response.")
+            print("No data found.")
             break
 
-        markets_list.extend(response['data'])
-        next_cursor = response.get("next_cursor")
+        for market in response['data']:
+            ts = market.get("updated_at") or market.get("created_at")
+            if ts:
+                market_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if market_time >= cutoff_time:
+                    markets_list.append(market)
+                else:
+                    fetching = False
+                    break
 
+        next_cursor = response.get("next_cursor")
         if not next_cursor:
             break
 
@@ -43,44 +43,30 @@ while True:
         print(f"Exception occurred: {e}")
         break
 
-print(f"Total markets fetched: {len(markets_list)}")
+print(f"Total markets from the last 7 days: {len(markets_list)}")
 
-# ----------- Filter for SPX and Bitcoin-related Markets -----------
+# ----------- Optional: Filter by Keyword and Save to CSV -----------
 keywords = ["spx", "bitcoin", "btc", "s&p", "s&p 500"]
-filtered_markets = [
-    market for market in markets_list
-    if any(keyword in market.get("question", "").lower() for keyword in keywords)
+filtered = [
+    m for m in markets_list if any(k in m.get("question", "").lower() for k in keywords)
 ]
 
-print(f"Filtered to {len(filtered_markets)} markets related to SPX/Bitcoin.")
-
-# ----------- Extract All CSV Headers from Flat and Nested Keys -----------
 csv_columns = set()
-for market in filtered_markets:
-    csv_columns.update(market.keys())
-    if 'tokens' in market:
-        for token in market['tokens']:
-            csv_columns.update({f"token_{key}" for key in token.keys()})
+for m in filtered:
+    csv_columns.update(m.keys())
+    if 'tokens' in m:
+        for token in m['tokens']:
+            csv_columns.update({f"token_{k}" for k in token.keys()})
 
-csv_columns = sorted(csv_columns)  # Alphabetically sorted for readability
+csv_columns = sorted(csv_columns)
+with open("spx_btc_markets.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=csv_columns)
+    writer.writeheader()
+    for m in filtered:
+        row = {k: m.get(k, 'N/A') for k in csv_columns if not k.startswith("token_")}
+        for token in m.get("tokens", []):
+            for tk in token:
+                row[f"token_{tk}"] = token.get(tk, 'N/A')
+        writer.writerow(row)
 
-# ----------- Write Filtered Markets to CSV -----------
-csv_file = "spx_btc_markets.csv"
-try:
-    with open(csv_file, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
-        writer.writeheader()
-        for market in filtered_markets:
-            row = {}
-            for key in csv_columns:
-                if key.startswith("token_"):
-                    token_key = key[len("token_"):]
-                    row[key] = ', '.join([str(token.get(token_key, 'N/A')) for token in market.get('tokens', [])])
-                else:
-                    row[key] = market.get(key, 'N/A')
-            writer.writerow(row)
-
-    print(f"Filtered data written to '{csv_file}' successfully.")
-
-except IOError as e:
-    print(f"Error writing to CSV: {e}")
+print("Done writing to CSV.")

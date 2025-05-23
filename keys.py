@@ -1,1 +1,1 @@
-api_key = "YOUR_ACTUAL_API_KEY_HERE"
+api_key = "0xa914dd0bed4825ea16122a8da2dee2d91161dc8a7c250ea100d50bce8e73bd38"
